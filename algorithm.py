@@ -8,10 +8,15 @@ from sklearn.cluster import Birch
 from sklearn.preprocessing import MultiLabelBinarizer
 from sklearn.metrics import jaccard_similarity_score
 
+import csv
+import sys
+csv.field_size_limit(sys.maxsize)
+
+
 
 def tokenize(text):
 
-    # first tokenize by sentence, then by word to ensure that punctuation is caught as it's own token
+    # first tokenize by sentence, then by word to ensure that punctuaation is caught as it's own token
     tokens = [word for sent in nltk.sent_tokenize(
         text) for word in nltk.word_tokenize(sent)]
     return tokens
@@ -33,19 +38,27 @@ def run(input_dir, output_dir, birch_thresh, window_size):
             line = line.strip()
             days.append(line)
 
+
+
     i = 1
     progress_df = pd.DataFrame()
-    for k in range(0, len(days), window_size):
+    prev=pd.DataFrame()
 
+
+    for k in range(0, len(days), window_size):
+       
+        progress_df=prev
+        prev=pd.DataFrame()
         first_half = days[k: k + window_size]
 
         df_list = []
         for file in first_half:
             df = pd.read_csv(path + file + '.csv',
-                             header=None, encoding="latin-1")
+                             header=None, encoding="latin-1",engine='python')
             df_list.append(df)
 
         df = pd.concat(df_list, ignore_index=True)
+        print("check1")
 
         themes = pd.DataFrame(df[4])
         locations = pd.DataFrame(df[5])
@@ -54,6 +67,7 @@ def run(input_dir, output_dir, birch_thresh, window_size):
         themes.columns = ['themes']
         locations.columns = ['locations']
         heading.columns = ['heading']
+
 
         for row in heading.itertuples():
             if type(row.heading) == float:
@@ -64,11 +78,16 @@ def run(input_dir, output_dir, birch_thresh, window_size):
             tokenized_data = tokenize(row.heading.lower())
             heading.loc[row.Index, 'heading'] = tokenized_data
 
+        print("check2")
+
         row_dict = df.copy(deep=True)
         row_dict.fillna('', inplace=True)
         row_dict.index = range(len(row_dict))
         # dictionary that maps row number to row
         row_dict = row_dict.to_dict('index')
+
+        print("check3--row_dict done")
+
 
         locations = pd.DataFrame(
             locations['locations'].str.split(';'))  # splitting locations
@@ -79,19 +98,32 @@ def run(input_dir, output_dir, birch_thresh, window_size):
             except:
                 continue
 
-        mlb = MultiLabelBinarizer(sparse_output=False)
-        sparse_heading = pd.DataFrame(mlb.fit_transform(
-            heading['heading']), columns=mlb.classes_, index=heading.index)
+        print(locations)
+        print(heading)
 
-        mlb2 = MultiLabelBinarizer(sparse_output=False)
-        sparse_locations = pd.DataFrame(mlb2.fit_transform(
-            locations['locations']), columns=mlb2.classes_, index=locations.index)
+        print("check4--locations done")
+
+
+        mlb = MultiLabelBinarizer(sparse_output=True)
+        sparse_heading = mlb.fit_transform(heading['heading'])
+
+        print("check5--heading mlb done")
+
+        mlb2 = MultiLabelBinarizer(sparse_output=True)
+        sparse_locations = mlb2.fit_transform(locations['locations'])
+
+        print("check6--locations mlb done")
 
         df = hstack([sparse_heading, sparse_locations])
 
+        print("check7--hstack done")
+
         brc = Birch(branching_factor=50, n_clusters=None,
                     threshold=birch_thresh, compute_labels=True)
+
         predicted_labels = brc.fit_predict(df)
+
+        print("check8--birch done")
 
         clusters = {}
         n = 0
@@ -104,27 +136,50 @@ def run(input_dir, output_dir, birch_thresh, window_size):
                 clusters[item] = [list((row_dict[n]).values())]
             n += 1
 
+
+        print("check9--cluster dictionary formed")
+
+        clust_to_file_path={}#maps cluster number with its final path
+        file_path_to_clust={}
+
         for item in clusters:
-            if len(clusters[item]) > 0:
+            #if len(clusters[item]) > 0:
                 clusters[item].sort(key=itemgetter(1))
                 file_path_temp = os.path.join(
                     temp_path, "f" + str(fIndex) + ".csv")
+
+
                 fIndex += 1
                 df = pd.DataFrame(clusters[item])
 
+                print("check 10--data loaded into df")
+
+
                 eR = df.head(1)  # eR : earliest representative
 
+                print("check 11--eR stored")
+
+                maxn=0
+
                 for index, row in progress_df.iterrows():
+
                     temp_df = pd.DataFrame(eR)
-                    temp_df = temp_df.append(row)
+
+                    temp_df = temp_df.append(row)#temp_df is containing lR of previous cluster and eR of current cluster..
 
                     locations = pd.DataFrame(temp_df[5])
+
                     locations = locations.reset_index(drop=True)
+
+                    print("check 12--locations stored in df")
+
                     locations.columns = ['locations']
 
                     heading = pd.DataFrame(temp_df[9])
                     heading = heading.reset_index(drop=True)
                     heading.columns = ['heading']
+
+                    print("check 13--heading stored in df")
 
                     locations = pd.DataFrame(
                         locations['locations'].str.split(';'))  # splitting locations
@@ -137,6 +192,8 @@ def run(input_dir, output_dir, birch_thresh, window_size):
                                     3]  # for retaining only ADM1 Code
                             except:
                                 continue
+                    print("check 14--locations splitted")
+
 
                     for h_row in heading.itertuples():
                         if type(h_row.heading) == float:
@@ -155,6 +212,7 @@ def run(input_dir, output_dir, birch_thresh, window_size):
                         locations['locations']), columns=mlb2.classes_, index=locations.index)
 
                     row_list = sparse_heading.values.tolist()
+
                     heading_similarity = jaccard_similarity_score(
                         row_list[0], row_list[1])
 
@@ -163,19 +221,42 @@ def run(input_dir, output_dir, birch_thresh, window_size):
                         row_list[0], row_list[1])
 
                     if heading_similarity > 0.1 and loc_similarity > 0.1:
-                        previous_chain_id = temp_df[0].iloc[1]
-                        file_path_temp = file_index[previous_chain_id]
-                        conDf = pd.read_csv(
-                            file_path_temp, header=None, encoding="latin-1")
-                        df = pd.concat([conDf, df], ignore_index=True)
-                        break
+                        if maxn<(heading_similarity*loc_similarity):
+                            previous_chain_id = temp_df[0].iloc[1]
+                            file_path_temp = file_index[previous_chain_id]
+                            maxn=heading_similarity*loc_similarity
+                            progress_df.drop([index])
+                            #break
 
                 lR = pd.DataFrame(df.tail(1))   # latest representative
                 file_index[lR[0].iloc[0]] = file_path_temp
+                print("check 17 --stored last representative")
+                print("check 18--file address stored")
 
-                progress_df = lR
-                df.drop_duplicates(subset=0, keep="first", inplace=True)
-                df.sort_values(by=[0], inplace=True)
-                df.to_csv(file_path_temp, sep=',', index=0, header=None)
+                progress_df = pd.concat([progress_df,lR],ignore_index=True)
+                prev=pd.concat([prev,lR],ignore_index=True)
+
+                clust_to_file_path[item]=file_path_temp
+                
+                if file_path_temp in file_path_to_clust:
+                    file_path_to_clust[file_path_temp].append(item)
+                else:
+                    file_path_to_clust[file_path_temp]=[item]
+
+
+
+        for path_clust,item in file_path_to_clust.items():
+            df_lst=[]
+
+            for x in item:
+                df=pd.DataFrame(clusters[x])
+                df_lst.append(df)     
+            
+            df = pd.concat(df_lst, ignore_index=True) 
+            #df.drop_duplicates(subset=0, keep="first", inplace=True)
+            df.sort_values(by=[0], inplace=True)
+            df_new=df.loc[:,[0,2]]
+            df_new.to_csv(path_clust, mode='a',sep=',', index=0, header=None)
+            file_path_to_clust[path_clust]=[]
 
         i += 1
